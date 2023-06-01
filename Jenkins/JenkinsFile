@@ -1,0 +1,293 @@
+def sourceMiqRepo = "github.com/" + env.DEFAULT_ORG + "/cb-manageiq"
+def destinationMiqRepo = "github.com/" + env.DEFAULT_ORG + "/manageiq"
+def sourceMiqUiRepo = "github.com/" + env.DEFAULT_ORG + "/cb-manageiq-ui-classic"
+def destinationMiqUiRepo = "github.com/" + env.DEFAULT_ORG + "/manageiq-ui-classic"
+def githubCredentialsID = env.DEFAULT_GITHUB_CREDENTIALS_ID
+def githubUserEmail = "vivek.gupta@click2cloud.net"
+def githubUserName = "click2cloud-vivekg"
+def cbDeploymentRepo = "https://github.com/" + env.DEFAULT_ORG + "/cb-deployment-assets"
+def buildScriptDir = "miq-cb-builder"
+
+def dockerRegistryServer = "https://" + env.DEFAULT_HARBOR_REGISTRY_URL
+def registryCredential = env.DEFAULT_HARBOR_REGISTRY_CREDENTIALS_ID
+def dockerRegistryRepo = env.DEFAULT_HARBOR_REGISTRY_URL + "/click2cloud/cb"
+def dockerImage = ''
+def commitID = ''
+def branch = ''
+def applianceRef = "ivanchuk-kanchenjunga-v1.0-httponly"
+
+pipeline {
+    agent any
+    parameters {
+        choice(
+            choices: 
+            [
+                'No', 
+                'Yes'
+            ],
+            description: 'Skip merge and directly build engine image from Dest_Build_Branch param', 
+            name: 'Build_Only_No_Merge'
+        )
+        string(
+            description: 'Source Branch to merge from cb-manageiq',
+            name: 'Source_Branch',
+            defaultValue: 'cb-dev',
+			trim: true
+        )
+        string(
+            description: 'Destination/Build Branch to merge into or/and build from manageiq',
+            name: 'Dest_Build_Branch',
+            defaultValue: 'cb-dev',
+			trim: true
+        )
+        choice(
+            choices: 
+            [
+                'No',
+                'Yes'
+            ],
+            description: 'overwrite image tag - Dont use branch or commit id as tag', 
+            name: 'Overwrite_Image_Tag'
+        )
+        string(
+            description: 'only works if you override image tag', 
+            name: 'New_Image_Tag',
+            defaultValue: '',
+			trim: true
+        )
+        choice(
+            choices: 
+            [
+                'No',
+                'Yes'
+            ],
+            description: 'skip image delivery to registry', 
+            name: 'Skip_Delivery'
+        )
+        choice(
+            choices:
+            [
+                'Yes',
+                'No'
+            ],
+            description: 'Deploy to Dev Environment. Works only for dev branch and environment', 
+            name: 'Deploy_To_Dev'
+        )
+        choice(
+            choices:
+            [
+                'Yes',
+                'No'
+            ],
+            description: 'Deploy to Test Environment. Works only for Test branch and environment', 
+            name: 'Deploy_To_Test'
+        )
+    }
+    stages {
+        stage('Git Checkout Destinations') {
+            when {
+                expression { params.Build_Only_No_Merge == 'No' }
+            }
+            steps {
+                script {
+					if (params.Source_Branch == '' || params.Dest_Build_Branch == '') {
+						currentBuild.result = 'ABORTED'
+						error("Build failed because of blank input.")
+					}
+				}
+
+                dir ('manageiq') {
+                    git url: "https://${destinationMiqRepo}", branch: "${params.Dest_Build_Branch}", credentialsId: "${githubCredentialsID}"
+                }       
+                dir ('manageiq-ui-classic') {
+                    git url: "https://${destinationMiqUiRepo}", branch: "${params.Dest_Build_Branch}", credentialsId: "${githubCredentialsID}"
+                }
+            }
+        }
+        stage('Add Remotes and Set Defaults') {
+            when {
+                expression { params.Build_Only_No_Merge == 'No' }
+            }
+            steps {
+                script {
+					if (params.Source_Branch == '' || params.Dest_Build_Branch == '') {
+						currentBuild.result = 'ABORTED'
+						error("Build failed because of blank input.")
+					}
+				}
+                dir ('manageiq') {
+                    sh 'for remote_name in $(git remote); do git remote remove "${remote_name}"; done'
+                    withCredentials([usernamePassword(credentialsId: "${githubCredentialsID}", usernameVariable: 'username', passwordVariable: 'password')])
+                    {
+                        // for auto merge if there are no conflicts
+                        sh "git config user.email ${githubUserEmail}"
+                        sh "git config user.name ${githubUserName}"
+                        
+                        sh("git remote add origin  https://$username:$password@$destinationMiqRepo")
+                        sh("git remote add source https://$username:$password@$sourceMiqRepo")
+                        sh("git fetch source")
+                    }
+                } 
+                dir ('manageiq-ui-classic') {
+                    sh 'for remote_name in $(git remote); do git remote remove "${remote_name}"; done'
+                    withCredentials([usernamePassword(credentialsId: "${githubCredentialsID}", usernameVariable: 'username', passwordVariable: 'password')])
+                    {
+                        // for auto merge if there are no conflicts
+                        sh "git config user.email ${githubUserEmail}"
+                        sh "git config user.name ${githubUserName}"
+                        
+                        sh("git remote add origin  https://$username:$password@$destinationMiqUiRepo")
+                        sh("git remote add source https://$username:$password@$sourceMiqUiRepo")
+                        sh("git fetch source")
+                    }
+                }
+            }
+        }
+        stage('Git Merge and Push') {
+            when {
+                expression { params.Build_Only_No_Merge == 'No' }
+            }
+            steps {
+                script {
+					if (params.Source_Branch == '' || params.Dest_Build_Branch == '') {
+						currentBuild.result = 'ABORTED'
+						error("Build failed because of blank input.")
+					}
+				}
+                dir ('manageiq') {
+                    sh "git merge source/${params.Source_Branch}"
+                    sh "git push origin ${Dest_Build_Branch}"
+                }
+                dir ('manageiq-ui-classic') {
+                    sh "git merge source/${params.Source_Branch}"
+                    sh "git push origin ${Dest_Build_Branch}"
+                }   
+                // for auto merge can fail here and manual intervention will be needed to resolve the commits  
+                
+            }
+        }
+        stage('Git Checkout Build Scripts') {
+            steps {  
+                script {
+					if (params.Dest_Build_Branch == '') {
+						currentBuild.result = 'ABORTED'
+						error("Build failed because of blank input.")
+					}
+				}
+                dir ('cb-deployment') {
+                    checkout([$class: 'GitSCM', branches: [[name: '*/miq-cb-builder']], doGenerateSubmoduleConfigurations: false, 
+                    extensions: [[$class: 'SparseCheckoutPaths', sparseCheckoutPaths: [[path: "${buildScriptDir}"]]]], submoduleCfg: [], 
+                    userRemoteConfigs: [[credentialsId: "${githubCredentialsID}", url: "${cbDeploymentRepo}"]]])
+                }
+            }
+        }
+        stage('Build Engine') {
+            steps {
+                script {
+					if (params.Dest_Build_Branch == '') {
+						currentBuild.result = 'ABORTED'
+						error("Build failed because of blank input.")
+					}
+				}
+                dir ("cb-deployment/${buildScriptDir}") {
+
+                    withCredentials([usernamePassword(credentialsId: "${githubCredentialsID}", usernameVariable: 'username', passwordVariable: 'password')]) {
+                                           
+                        script {
+                            
+                            branch = "${params.Dest_Build_Branch}"
+                            commitID = sh(script: "git ls-remote https://${password}:@github.com/${DEFAULT_ORG}/manageiq.git ${branch} | cut -c 1-7", returnStdout: true).trim()
+                            
+                            if (params.Overwrite_Image_Tag == 'Yes') {
+                                if (params.New_Image_Tag == '') {
+                                    currentBuild.result = 'ABORTED'
+                                    error("Build failed because Overwrite_Image_Tag is yes and New_Image_Tag is blank.")
+                                }
+                                imageTag = params.New_Image_Tag                        
+                            } else {
+                                imageTag = "${branch}"
+                            }
+                                                            
+                            dockerImage = docker.build("${dockerRegistryRepo}:${imageTag}", "--build-arg GIT_TOKEN=${password} --build-arg BUNDLE_GITHUB__COM=${password}:x-oauth-basic --build-arg MIQ_ORG=${DEFAULT_ORG} --build-arg MIQ_REF=${branch} --build-arg APPLIANCE_REF=${applianceRef} --build-arg COMMIT=${commitID}  --build-arg BRANCH=${branch} --no-cache -f Dockerfile ." )
+                            
+                        }
+                        
+                    }
+                }
+            }
+        }
+        stage('Publish Engine') {
+            when {
+                expression { params.Skip_Delivery == 'No' }
+            }
+            steps{
+                script {
+                    docker.withRegistry(dockerRegistryServer, registryCredential) {
+                        dockerImage.push()
+                        dockerImage.push("${imageTag}-${env.BUILD_NUMBER}")
+                    }
+                }
+            }
+        }
+        stage('Deploy on Dev') {
+            when {
+                expression { params.Deploy_To_Dev == 'Yes' }
+                expression { params.Skip_Delivery == 'No' }
+            }
+            steps{
+                script {
+                    if (params.Overwrite_Image_Tag == 'Yes') {
+                        imageTag = params.New_Image_Tag                        
+                    } else {
+                        imageTag = params.Dest_Build_Branch
+                    }
+                    build job: 'deployer', parameters: [extendedChoice(name: 'Environments', value: 'dev'), extendedChoice(name: 'Applications', value: 'cb-engine'), string(name: 'Skip_Image_Pull', value: 'None'), , string(name: 'Dev_Tag', value: "${imageTag}")]
+                }
+            }
+        }
+        stage('Deploy on Test') {
+            when {
+                expression { params.Deploy_To_Test == 'Yes' }
+                expression { params.Skip_Delivery == 'No' }
+            }
+            steps{
+                script {
+                    if (params.Overwrite_Image_Tag == 'Yes') {
+                        imageTag = params.New_Image_Tag                        
+                    } else {
+                        imageTag = params.Dest_Build_Branch
+                    }
+                    build job: 'deployer', parameters: [extendedChoice(name: 'Environments', value: 'test'), extendedChoice(name: 'Applications', value: 'cb-engine'), string(name: 'Skip_Image_Pull', value: 'None'), , string(name: 'Test_Tag', value: "${imageTag}")]
+                }
+            }
+        }  
+    }
+    post { 
+        always {
+            echo 'I will always say Hello again!'
+            
+            emailext body: "${currentBuild.currentResult}: Job ${env.JOB_NAME} build ${env.BUILD_NUMBER}\n More info at: ${env.BUILD_URL}\n This is a commit: ${commitID}\n This is cb-manageiq GIT_Repo: ${destinationMiqRepo} \n This is cb-manageiq-ui-classic GIT_Repo: ${destinationMiqUiRepo}   \n Branch_Name: ${branch}",
+                recipientProviders: [developers(), requestor()],
+                subject: "Jenkins Build ${currentBuild.currentResult}: Job ${env.JOB_NAME}"
+        }
+        failure {
+            echo 'I will always say Hello again!'
+            
+            emailext attachLog: true, body: "${currentBuild.currentResult}: Job ${env.JOB_NAME} build ${env.BUILD_NUMBER}\n More info at: ${env.BUILD_URL}\n This is a commit: ${commitID}\n This is cb-manageiq GIT_Repo: ${destinationMiqRepo} \n This is cb-manageiq-ui-classic GIT_Repo: ${destinationMiqUiRepo} \n Branch_Name: ${branch}  \n\n <p><i>(Build log is attached.)</i></p>",
+                recipientProviders: [developers(), requestor(), ],
+                replyTo: '$DEFAULT_REPLYTO',
+                subject: "Jenkins Build ${currentBuild.currentResult}: Job ${env.JOB_NAME}",
+                to: '$DEFAULT_RECIPIENTS'
+                
+        }
+        success {
+            echo 'I will always say Hello again!'
+            
+            emailext body: "${currentBuild.currentResult}: Job ${env.JOB_NAME} build ${env.BUILD_NUMBER}\n More info at: ${env.BUILD_URL}\n This is a commit: ${commitID}\n This is cb-manageiq GIT_Repo: ${destinationMiqRepo} \n This is cb-manageiq-ui-classic GIT_Repo: ${destinationMiqUiRepo}  \n Branch_Name: ${branch}",
+                recipientProviders: [developers(), requestor()],
+                replyTo: '$DEFAULT_REPLYTO',
+                subject: "Jenkins Build ${currentBuild.currentResult}: Job ${env.JOB_NAME}",
+                to: '$DEFAULT_RECIPIENTS'
+        }
+    }
+}
