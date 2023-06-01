@@ -1,0 +1,12 @@
+location = "east us"
+resource_group_name = "aks-rg"
+cluster_name = "aks-terraform"
+dns_prefix = "aksdemo"
+node_count = "1"
+instance_type = "Standard_DS2_v2"
+subscription_id = "59d6d9a0-07dd-44b2-a16d-4ae044731549"
+client_id = "1cc5d673-cbcb-4ff4-8c5c-b04229110de5"
+client_secret = "Hbt8Q~R9.Fl2_1hemVfLeG1mLNhm3Ig.K5QoxcmJ"
+tenant_id = "5550d1de-8067-40b6-8406-b77e569206a1"
+azurerm_virtual_network = "aks-vn"
+
